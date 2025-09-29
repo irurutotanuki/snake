@@ -1,0 +1,607 @@
+<!DOCTYPE html>
+<html lang="ja">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0, user-scalable=no">
+    <title>マージスネークオンライン</title>
+    <script src="https://cdn.tailwindcss.com"></script>
+    <link rel="preconnect" href="https://fonts.googleapis.com">
+    <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+    <link href="https://fonts.googleapis.com/css2?family=Press+Start+2P&display=swap" rel="stylesheet">
+    <style>
+        body {
+            font-family: 'Press-Start-2P', 'MS Gothic', sans-serif;
+            touch-action: none;
+            overflow: hidden;
+            background-color: #0c0a09;
+        }
+        canvas {
+            background-color: #1c1917;
+            background-image:
+                linear-gradient(rgba(255, 255, 255, 0.07) 2px, transparent 2px),
+                linear-gradient(90deg, rgba(255, 255, 255, 0.07) 2px, transparent 2px);
+            background-size: 50px 50px;
+            image-rendering: auto;
+        }
+        #joystick-container {
+            position: fixed;
+            bottom: 30px;
+            left: 30px;
+            width: 150px;
+            height: 150px;
+            background: rgba(50, 50, 50, 0.3);
+            border-radius: 50%;
+            display: flex;
+            align-items: center;
+            justify-content: center;
+        }
+        #joystick-thumb {
+            width: 60px;
+            height: 60px;
+            background: rgba(200, 200, 200, 0.5);
+            border-radius: 50%;
+            position: absolute;
+            transition: transform 0.1s;
+        }
+        #boost-button {
+            position: fixed;
+            bottom: 30px;
+            right: 30px;
+            width: 100px;
+            height: 100px;
+            background: rgba(251, 146, 60, 0.4);
+            border: 4px solid rgba(251, 146, 60, 0.7);
+            border-radius: 50%;
+            display: flex;
+            align-items: center;
+            justify-content: center;
+            color: white;
+            font-size: 1.2rem;
+            text-shadow: 2px 2px 4px black;
+        }
+        #boost-button:active {
+            transform: scale(0.9);
+            background: rgba(249, 115, 22, 0.6);
+        }
+        .server-btn.active {
+            background-color: #facc15;
+            color: #111827;
+            box-shadow: 0 0 10px #facc15;
+        }
+    </style>
+</head>
+<body class="text-white flex flex-col items-center justify-center h-screen overflow-hidden">
+
+    <div class="fixed top-4 left-4 text-left z-10 p-2 bg-black bg-opacity-30 rounded max-w-xs">
+        <h1 class="text-2xl text-yellow-300">マージスネーク</h1>
+        <div>サーバー: <span id="serverName">1</span> | プレイヤー: <span id="playerCount">0</span></div>
+        <div>スコア: <span id="score">0</span></div>
+    </div>
+    
+    <!-- ミニマップ -->
+    <canvas id="minimapCanvas" class="fixed top-28 left-4 border-2 border-gray-500 bg-black bg-opacity-50 rounded" width="150" height="150"></canvas>
+
+    <div class="fixed top-4 right-4 z-10 p-2 bg-black bg-opacity-30 rounded">
+        <h2 class="text-lg text-center">リーダーボード</h2>
+        <ol id="leaderboard" class="list-decimal list-inside"></ol>
+    </div>
+
+    <canvas id="gameCanvas"></canvas>
+
+    <!-- 操作UI -->
+    <div id="joystick-container">
+        <div id="joystick-thumb"></div>
+    </div>
+    <button id="boost-button">ブースト</button>
+    
+    <!-- 開始/ゲームオーバー モーダル -->
+    <div id="modal" class="fixed inset-0 bg-black bg-opacity-80 flex items-center justify-center transition-opacity duration-300 z-50">
+        <div class="bg-gray-800 border-4 border-yellow-500 p-8 rounded-lg text-center shadow-2xl w-11/12 max-w-md">
+            <h2 id="modal-title" class="text-4xl md:text-5xl mb-2 text-yellow-500">マージスネーク</h2>
+            <p class="text-lg md:text-xl mb-4" id="modal-subtitle">コインを集めて一番大きなスネークを目指せ！</p>
+            <div id="final-score-container" class="hidden">
+                 <p class="text-xl md:text-2xl mb-2">最終スコア:</p>
+                 <p id="finalScore" class="text-4xl mb-6 text-green-400">0</p>
+            </div>
+            <input type="text" id="playerNameInput" placeholder="名前を入力" class="w-full p-2 rounded bg-gray-700 text-white text-center text-xl mb-4" maxlength="12">
+            
+            <!-- サーバー選択UI -->
+            <div id="server-selection" class="my-4">
+                <h3 class="text-xl mb-2">サーバー選択</h3>
+                <div class="grid grid-cols-3 gap-2">
+                    <button class="server-btn bg-gray-700 hover:bg-gray-600 p-2 rounded-md transition-all active" data-server="1">S1 <span id="server-1-count">(0/30)</span></button>
+                    <button class="server-btn bg-gray-700 hover:bg-gray-600 p-2 rounded-md transition-all" data-server="2">S2 <span id="server-2-count">(0/30)</span></button>
+                    <button class="server-btn bg-gray-700 hover:bg-gray-600 p-2 rounded-md transition-all" data-server="3">S3 <span id="server-3-count">(0/30)</span></button>
+                </div>
+            </div>
+
+            <button id="playButton" class="w-full bg-blue-600 hover:bg-blue-800 text-white font-bold py-3 px-6 rounded text-xl md:text-2xl transition-transform transform hover:scale-105 mt-4">
+                プレイ
+            </button>
+        </div>
+    </div>
+    
+    <script type="module">
+        import { initializeApp } from "https://www.gstatic.com/firebasejs/10.12.2/firebase-app.js";
+        import { getAuth, signInAnonymously, onAuthStateChanged } from "https://www.gstatic.com/firebasejs/10.12.2/firebase-auth.js";
+        import { getFirestore, doc, setDoc, deleteDoc, onSnapshot, collection, writeBatch, getDocs } from "https://www.gstatic.com/firebasejs/10.12.2/firebase-firestore.js";
+
+        // === 初期設定 ===
+        const canvas = document.getElementById('gameCanvas');
+        const ctx = canvas.getContext('2d');
+        const minimapCanvas = document.getElementById('minimapCanvas');
+        const minimapCtx = minimapCanvas.getContext('2d');
+        const elements = {
+            score: document.getElementById('score'),
+            serverName: document.getElementById('serverName'),
+            playerCount: document.getElementById('playerCount'),
+            leaderboard: document.getElementById('leaderboard'),
+            modal: document.getElementById('modal'),
+            modalTitle: document.getElementById('modal-title'),
+            modalSubtitle: document.getElementById('modal-subtitle'),
+            finalScoreContainer: document.getElementById('final-score-container'),
+            finalScore: document.getElementById('finalScore'),
+            playerNameInput: document.getElementById('playerNameInput'),
+            playButton: document.getElementById('playButton'),
+            serverButtons: document.querySelectorAll('.server-btn'),
+            joystick: document.getElementById('joystick-container'),
+            joystickThumb: document.getElementById('joystick-thumb'),
+            boostButton: document.getElementById('boost-button')
+        };
+        
+        // === ゲーム定数 ===
+        const WORLD_SIZE = 3000;
+        const BASE_SPEED = 2.5;
+        const BOOST_SPEED = 5;
+        const TURN_SPEED = 0.07;
+        const SNAKE_RADIUS = 10;
+        const MAX_PLAYERS_PER_SERVER = 30;
+        const INITIAL_FOOD_COUNT = 200;
+
+        // === ゲーム状態 ===
+        let localPlayer = null;
+        let allPlayers = {};
+        let food = {};
+        let camera = { x: WORLD_SIZE / 2, y: WORLD_SIZE / 2, zoom: 1 };
+        let joystick = { active: false, angle: 0, dx: 0, dy: 0 };
+        let isBoosting = false;
+        let animationFrameId;
+
+        // === Firebase関連 ===
+        let db, auth, userId, appId;
+        let currentServerId = null;
+        let selectedServerId = '1';
+        let unsubPlayers, unsubFood;
+        let serverCountUnsubscribers = [];
+
+        // === Firebase 初期化 ===
+        async function initializeFirebase() {
+            try {
+                const firebaseConfig = {
+                  apiKey: "AIzaSyDFt4WECRt8td1fvbUA-IFm94O66lt5iSY",
+                  authDomain: "sportnetworkfor-ruby.firebaseapp.com",
+                  projectId: "sportnetworkfor-ruby",
+                  storageBucket: "sportnetworkfor-ruby.firebasestorage.app",
+                  messagingSenderId: "829403903709",
+                  appId: "1:829403903709:web:83ff5431f084fe3ba04d34",
+                  measurementId: "G-VQPE8FKLNK"
+                };
+                appId = typeof __app_id !== 'undefined' ? __app_id : 'default-app-id';
+                const app = initializeApp(firebaseConfig);
+                db = getFirestore(app);
+                auth = getAuth(app);
+                onAuthStateChanged(auth, user => {
+                    if (user) {
+                        userId = user.uid;
+                        listenToAllServerCounts();
+                    } else {
+                        signInAnonymously(auth);
+                    }
+                });
+            } catch (e) { console.error("Firebase init failed:", e); }
+        }
+        
+        function getCollectionPath(serverId, collectionName) {
+            const path = `merge_snake_v3_server_${serverId}_${collectionName}`;
+            return `/artifacts/${appId}/public/data/${path}`;
+        }
+
+        function listenToAllServerCounts() {
+            serverCountUnsubscribers.forEach(unsub => unsub());
+            serverCountUnsubscribers = [];
+            for (let i = 1; i <= 3; i++) {
+                const serverId = i.toString();
+                const playersCollection = collection(db, getCollectionPath(serverId, 'players'));
+                const unsub = onSnapshot(playersCollection, snapshot => {
+                    const count = snapshot.size;
+                    const countEl = document.getElementById(`server-${serverId}-count`);
+                    if (countEl) {
+                        countEl.textContent = `(${count}/${MAX_PLAYERS_PER_SERVER})`;
+                    }
+                });
+                serverCountUnsubscribers.push(unsub);
+            }
+        }
+        
+        async function connectAndStart(serverId) {
+            if (currentServerId && currentServerId !== serverId) {
+                if(unsubPlayers) unsubPlayers();
+                if(unsubFood) unsubFood();
+                await deleteDoc(doc(db, getCollectionPath(currentServerId, 'players'), userId));
+            }
+            currentServerId = serverId;
+            elements.serverName.textContent = serverId;
+
+            listenForGameUpdates();
+            
+            const foodCollection = collection(db, getCollectionPath(currentServerId, 'food'));
+            const foodSnapshot = await getDocs(foodCollection);
+            if(foodSnapshot.empty){
+                spawnInitialFood();
+            }
+
+            startGame();
+        }
+
+        // === ゲームロジック ===
+        function startGame() {
+            const playerName = elements.playerNameInput.value || `Player${Math.floor(Math.random() * 1000)}`;
+            elements.modal.classList.add('hidden');
+            
+            const startPos = { x: 100 + Math.random() * (WORLD_SIZE - 200), y: 100 + Math.random() * (WORLD_SIZE - 200) };
+            localPlayer = {
+                id: userId,
+                name: playerName,
+                segments: [startPos],
+                angle: Math.random() * 2 * Math.PI,
+                targetAngle: 0,
+                score: 10,
+                color: `hsl(${Math.random() * 360}, 70%, 50%)`
+            };
+            
+            isBoosting = false;
+            if (animationFrameId) cancelAnimationFrame(animationFrameId);
+            gameLoop();
+        }
+
+        function gameLoop() {
+            update();
+            draw();
+            animationFrameId = requestAnimationFrame(gameLoop);
+        }
+
+        let lastUpdateTime = 0;
+        function update() {
+            if (!localPlayer) return;
+
+            if (joystick.active) {
+                localPlayer.targetAngle = joystick.angle;
+            }
+            let angleDiff = localPlayer.targetAngle - localPlayer.angle;
+            while (angleDiff < -Math.PI) angleDiff += 2 * Math.PI;
+            while (angleDiff > Math.PI) angleDiff -= 2 * Math.PI;
+            localPlayer.angle += angleDiff * TURN_SPEED;
+
+            const speed = isBoosting && localPlayer.score > 10 ? BOOST_SPEED : BASE_SPEED;
+            const head = localPlayer.segments[0];
+            const newHead = {
+                x: head.x + Math.cos(localPlayer.angle) * speed,
+                y: head.y + Math.sin(localPlayer.angle) * speed,
+            };
+
+            // 範囲外判定
+            if (newHead.x < 0 || newHead.x > WORLD_SIZE || newHead.y < 0 || newHead.y > WORLD_SIZE) {
+                handleDeath(true); // 範囲外による死亡
+                return;
+            }
+            
+            localPlayer.segments.unshift(newHead);
+
+            const maxSegments = Math.floor(localPlayer.score);
+            while (localPlayer.segments.length > maxSegments) {
+                localPlayer.segments.pop();
+            }
+
+            if (isBoosting && localPlayer.score > 10) {
+                localPlayer.score -= 0.1;
+                if (Math.random() < 0.1) {
+                    const lastSegment = localPlayer.segments[localPlayer.segments.length - 1];
+                    spawnFood(1, lastSegment.x, lastSegment.y);
+                }
+            }
+
+            checkFoodCollision();
+            checkPlayerCollision();
+
+            camera.x += (localPlayer.segments[0].x - camera.x) * 0.1;
+            camera.y += (localPlayer.segments[0].y - camera.y) * 0.1;
+
+            if (Date.now() - lastUpdateTime > 100) {
+                updatePlayerInFirestore();
+                lastUpdateTime = Date.now();
+            }
+            
+            elements.score.textContent = Math.floor(localPlayer.score);
+            updateLeaderboard();
+        }
+
+        function checkFoodCollision() {
+            const head = localPlayer.segments[0];
+            const batch = writeBatch(db);
+            let eaten = false;
+            for (const id in food) {
+                const f = food[id];
+                const dist = Math.hypot(head.x - f.x, head.y - f.y);
+                if (dist < SNAKE_RADIUS + 5) {
+                    localPlayer.score += f.value;
+                    const foodDocRef = doc(db, getCollectionPath(currentServerId, 'food'), id);
+                    batch.delete(foodDocRef);
+                    delete food[id];
+                    eaten = true;
+                }
+            }
+            if (eaten) batch.commit().catch(console.error);
+        }
+
+        function checkPlayerCollision() {
+            const head = localPlayer.segments[0];
+            for (const pId in allPlayers) {
+                if (pId === userId) continue;
+                const otherPlayer = allPlayers[pId];
+                for (let i = 0; i < otherPlayer.segments.length; i++) {
+                    const segment = otherPlayer.segments[i];
+                    const dist = Math.hypot(head.x - segment.x, head.y - segment.y);
+                    if (dist < SNAKE_RADIUS * 1.5) { // 衝突
+                        handleDeath(false);
+                        return;
+                    }
+                }
+            }
+        }
+
+        function handleDeath(isOutOfBounds = false) {
+            if (!isOutOfBounds && localPlayer && localPlayer.segments.length > 0) {
+                spawnFood(localPlayer.segments.length, localPlayer.segments[0].x, localPlayer.segments[0].y, true);
+            }
+            
+            const scoreBeforeDeath = localPlayer ? Math.floor(localPlayer.score) : 0;
+            deleteDoc(doc(db, getCollectionPath(currentServerId, 'players'), userId));
+            
+            localPlayer = null;
+            cancelAnimationFrame(animationFrameId);
+
+            elements.modal.classList.remove('hidden');
+            elements.modalTitle.textContent = isOutOfBounds ? "範囲外" : "ゲームオーバー";
+            elements.modalSubtitle.textContent = isOutOfBounds ? "ワールドの外に出てしまいました。" : "";
+            elements.finalScoreContainer.classList.remove('hidden');
+            elements.finalScore.textContent = scoreBeforeDeath;
+            elements.playButton.textContent = "もう一度プレイ";
+        }
+
+        function draw() {
+            canvas.width = window.innerWidth;
+            canvas.height = window.innerHeight;
+            
+            ctx.save();
+            ctx.translate(canvas.width / 2, canvas.height / 2);
+            ctx.scale(camera.zoom, camera.zoom);
+            ctx.translate(-camera.x, -camera.y);
+
+            ctx.fillStyle = '#1c1917';
+            ctx.fillRect(0, 0, WORLD_SIZE, WORLD_SIZE);
+            
+            ctx.strokeStyle = 'rgba(255, 0, 0, 0.5)';
+            ctx.lineWidth = 20;
+            ctx.strokeRect(0, 0, WORLD_SIZE, WORLD_SIZE);
+
+            for (const id in food) {
+                const f = food[id];
+                ctx.beginPath();
+                ctx.arc(f.x, f.y, 5, 0, 2 * Math.PI);
+                ctx.fillStyle = f.color;
+                ctx.fill();
+            }
+            
+            Object.values(allPlayers).sort((a,b) => a.score - b.score).forEach(p => drawSnake(p));
+            if(localPlayer) drawSnake(localPlayer);
+
+            ctx.restore();
+            
+            drawMinimap();
+        }
+        
+        function drawMinimap() {
+            minimapCtx.clearRect(0, 0, 150, 150);
+            minimapCtx.fillStyle = 'rgba(0, 0, 0, 0.4)';
+            minimapCtx.fillRect(0, 0, 150, 150);
+            minimapCtx.strokeStyle = 'gray';
+            minimapCtx.strokeRect(0, 0, 150, 150);
+            
+            const scale = 150 / WORLD_SIZE;
+            
+            for(const pId in allPlayers){
+                const p = allPlayers[pId];
+                if(p.segments && p.segments.length > 0) {
+                    minimapCtx.fillStyle = p.color;
+                    minimapCtx.fillRect(p.segments[0].x * scale, p.segments[0].y * scale, 3, 3);
+                }
+            }
+            
+            if(localPlayer && localPlayer.segments.length > 0) {
+                minimapCtx.fillStyle = 'yellow';
+                minimapCtx.beginPath();
+                minimapCtx.arc(localPlayer.segments[0].x * scale, localPlayer.segments[0].y * scale, 4, 0, 2 * Math.PI);
+                minimapCtx.fill();
+            }
+        }
+
+        function drawSnake(player) {
+            for (let i = 0; i < player.segments.length; i++) {
+                const part = player.segments[i];
+                const radius = SNAKE_RADIUS * (1 - i / (player.segments.length * 2));
+                ctx.beginPath();
+                ctx.arc(part.x, part.y, Math.max(2, radius), 0, 2 * Math.PI);
+                ctx.fillStyle = player.color;
+                ctx.fill();
+            }
+            const head = player.segments[0];
+            const eyeOffset = SNAKE_RADIUS * 0.4;
+            const eyeRadius = SNAKE_RADIUS * 0.2;
+            const angle = player.angle;
+            
+            const eye1X = head.x + Math.cos(angle + Math.PI / 2) * eyeOffset;
+            const eye1Y = head.y + Math.sin(angle + Math.PI / 2) * eyeOffset;
+            const eye2X = head.x + Math.cos(angle - Math.PI / 2) * eyeOffset;
+            const eye2Y = head.y + Math.sin(angle - Math.PI / 2) * eyeOffset;
+
+            ctx.fillStyle = 'white';
+            ctx.beginPath(); ctx.arc(eye1X, eye1Y, eyeRadius, 0, 2 * Math.PI); ctx.fill();
+            ctx.beginPath(); ctx.arc(eye2X, eye2Y, eyeRadius, 0, 2 * Math.PI); ctx.fill();
+            ctx.fillStyle = 'black';
+            ctx.beginPath(); ctx.arc(eye1X + Math.cos(angle)*2, eye1Y + Math.sin(angle)*2, eyeRadius*0.5, 0, 2 * Math.PI); ctx.fill();
+            ctx.beginPath(); ctx.arc(eye2X + Math.cos(angle)*2, eye2Y + Math.sin(angle)*2, eyeRadius*0.5, 0, 2 * Math.PI); ctx.fill();
+
+            ctx.fillStyle = 'white';
+            ctx.font = '16px "Press-Start-2P"';
+            ctx.textAlign = 'center';
+            ctx.fillText(player.name, head.x, head.y - SNAKE_RADIUS - 10);
+        }
+
+        function updateLeaderboard() {
+            const playersWithLocal = {...allPlayers};
+            if(localPlayer) playersWithLocal[userId] = localPlayer;
+
+            const sortedPlayers = Object.values(playersWithLocal).sort((a, b) => b.score - a.score).slice(0, 5);
+            elements.leaderboard.innerHTML = '';
+            sortedPlayers.forEach(p => {
+                const li = document.createElement('li');
+                li.textContent = `${p.name}: ${Math.floor(p.score)}`;
+                if(p.id === userId) li.style.color = '#facc15';
+                elements.leaderboard.appendChild(li);
+            });
+        }
+        
+        // === Firebaseとの通信 ===
+        function listenForGameUpdates() {
+            unsubPlayers = onSnapshot(collection(db, getCollectionPath(currentServerId, 'players')), snapshot => {
+                const currentIds = {};
+                snapshot.forEach(d => {
+                    if (d.id !== userId) allPlayers[d.id] = d.data();
+                    currentIds[d.id] = true;
+                });
+                Object.keys(allPlayers).forEach(id => {
+                    if (!currentIds[id]) delete allPlayers[id];
+                });
+                elements.playerCount.textContent = Object.keys(allPlayers).length + (localPlayer ? 1 : 0);
+            });
+            unsubFood = onSnapshot(collection(db, getCollectionPath(currentServerId, 'food')), snapshot => {
+                snapshot.docChanges().forEach(change => {
+                    if(change.type === 'added') food[change.doc.id] = change.doc.data();
+                    if(change.type === 'removed') delete food[change.doc.id];
+                });
+            });
+        }
+
+        async function updatePlayerInFirestore() {
+            if (!userId || !localPlayer) return;
+            const playerDoc = doc(db, getCollectionPath(currentServerId, 'players'), userId);
+            const data = { ...localPlayer };
+            data.segments = data.segments.filter((_, i) => i % 3 === 0);
+            await setDoc(playerDoc, data);
+        }
+        
+        async function spawnInitialFood() {
+             const batch = writeBatch(db);
+             for(let i = 0; i < INITIAL_FOOD_COUNT; i++) {
+                const foodId = doc(collection(db, 'idGenerator')).id;
+                const foodDocRef = doc(db, getCollectionPath(currentServerId, 'food'), foodId);
+                batch.set(foodDocRef, {
+                    x: Math.random() * WORLD_SIZE,
+                    y: Math.random() * WORLD_SIZE,
+                    value: 1,
+                    color: `hsl(${Math.random() * 360}, 100%, 75%)`
+                });
+             }
+             await batch.commit().catch(console.error);
+        }
+
+        async function spawnFood(count, x, y, isDeath = false) {
+             const batch = writeBatch(db);
+             for(let i = 0; i < count; i++) {
+                const foodId = doc(collection(db, 'idGenerator')).id;
+                const foodDocRef = doc(db, getCollectionPath(currentServerId, 'food'), foodId);
+                const value = isDeath ? Math.ceil(Math.random() * 2) : 1;
+                batch.set(foodDocRef, {
+                    x: x + (Math.random() - 0.5) * (isDeath ? 200 : 20),
+                    y: y + (Math.random() - 0.5) * (isDeath ? 200 : 20),
+                    value,
+                    color: `hsl(${Math.random() * 360}, 100%, 75%)`
+                });
+             }
+             await batch.commit();
+        }
+
+        // === イベントリスナー ===
+        elements.playButton.addEventListener('click', () => connectAndStart(selectedServerId));
+        
+        elements.serverButtons.forEach(b => {
+            b.addEventListener('click', () => {
+                selectedServerId = b.dataset.server;
+                elements.serverButtons.forEach(btn => btn.classList.remove('active'));
+                b.classList.add('active');
+            });
+        });
+
+        window.addEventListener('beforeunload', () => {
+            if(userId && localPlayer) deleteDoc(doc(db, getCollectionPath(currentServerId, 'players'), userId));
+        });
+        
+        // Joystick & Boost controls
+        function handlePointerDown(e) {
+            const rect = elements.joystick.getBoundingClientRect();
+            const touch = e.touches ? e.touches[0] : e;
+            const x = touch.clientX - rect.left - rect.width / 2;
+            const y = touch.clientY - rect.top - rect.height / 2;
+            if (Math.hypot(x,y) < rect.width / 2) {
+                joystick.active = true;
+                handlePointerMove(e);
+            }
+        }
+        function handlePointerMove(e) {
+            if (!joystick.active) return;
+            e.preventDefault();
+            const rect = elements.joystick.getBoundingClientRect();
+            const touch = e.touches ? e.touches[0] : e;
+            let dx = touch.clientX - (rect.left + rect.width / 2);
+            let dy = touch.clientY - (rect.top + rect.height / 2);
+            const dist = Math.hypot(dx, dy);
+            joystick.angle = Math.atan2(dy, dx);
+            if (dist > rect.width/2 - 30) {
+                dx = Math.cos(joystick.angle) * (rect.width/2 - 30);
+                dy = Math.sin(joystick.angle) * (rect.width/2 - 30);
+            }
+            elements.joystickThumb.style.transform = `translate(${dx}px, ${dy}px)`;
+        }
+        function handlePointerUp() {
+            joystick.active = false;
+            elements.joystickThumb.style.transform = 'translate(0,0)';
+        }
+
+        elements.joystick.addEventListener('mousedown', handlePointerDown);
+        elements.joystick.addEventListener('touchstart', handlePointerDown);
+        window.addEventListener('mousemove', handlePointerMove);
+        window.addEventListener('touchmove', handlePointerMove, { passive: false });
+        window.addEventListener('mouseup', handlePointerUp);
+        window.addEventListener('touchend', handlePointerUp);
+
+        elements.boostButton.addEventListener('mousedown', () => isBoosting = true);
+        elements.boostButton.addEventListener('mouseup', () => isBoosting = false);
+        elements.boostButton.addEventListener('touchstart', (e) => { e.preventDefault(); isBoosting = true; });
+        elements.boostButton.addEventListener('touchend', () => isBoosting = false);
+        
+        // === 初期化実行 ===
+        initializeFirebase();
+    </script>
+</body>
+</html>
+
