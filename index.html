@@ -108,11 +108,10 @@
             <!-- サーバー選択UI -->
             <div id="server-selection" class="my-4">
                 <h3 class="text-xl mb-2">サーバー選択</h3>
-                <div class="grid grid-cols-2 gap-2">
+                <div class="grid grid-cols-3 gap-2">
                     <button class="server-btn bg-gray-700 hover:bg-gray-600 p-2 rounded-md transition-all active" data-server="1">S1 <span id="server-1-count">(0/30)</span></button>
                     <button class="server-btn bg-gray-700 hover:bg-gray-600 p-2 rounded-md transition-all" data-server="2">S2 <span id="server-2-count">(0/30)</span></button>
                     <button class="server-btn bg-gray-700 hover:bg-gray-600 p-2 rounded-md transition-all" data-server="3">S3 <span id="server-3-count">(0/30)</span></button>
-                    <button class="server-btn bg-green-800 hover:bg-green-700 p-2 rounded-md transition-all" data-server="B1">BOT <span id="server-B1-count">(10/30)</span></button>
                 </div>
             </div>
 
@@ -159,14 +158,12 @@
         const MAX_PLAYERS_PER_SERVER = 30;
         const MAX_FOOD_COUNT = 150;
         const FOOD_LIFETIME = 15000;
-        const PLAYER_TIMEOUT = 6000; // 最適化：タイムアウト時間を少し延長
-        const BOT_COUNT = 10; // 最適化：BOTの数を10に削減
+        const PLAYER_TIMEOUT = 6000;
         const INITIAL_SCORE = 30;
 
         // === ゲーム状態 ===
         let localPlayer = null;
         let allPlayers = {};
-        let bots = [];
         let food = {};
         let camera = { x: WORLD_SIZE / 2, y: WORLD_SIZE / 2, zoom: 1 };
         let joystick = { active: false, angle: 0, dx: 0, dy: 0 };
@@ -217,7 +214,7 @@
             serverCountUnsubscribers.forEach(unsub => unsub());
             serverCountUnsubscribers = [];
             
-            const serverIds = ['1', '2', '3', 'B1'];
+            const serverIds = ['1', '2', '3'];
             serverIds.forEach(serverId => {
                 const playersCollection = collection(db, getCollectionPath(serverId, 'players'));
                 const unsub = onSnapshot(playersCollection, snapshot => {
@@ -230,9 +227,6 @@
                         }
                     });
 
-                    if (serverId === 'B1') {
-                        count += BOT_COUNT;
-                    }
                     const countEl = document.getElementById(`server-${serverId}-count`);
                     if (countEl) {
                         countEl.textContent = `(${count}/${MAX_PLAYERS_PER_SERVER})`;
@@ -243,33 +237,42 @@
         }
         
         async function connectAndStart(serverId) {
-            if (currentServerId) {
-                 if(unsubPlayers) unsubPlayers();
-                 if(unsubFood) unsubFood();
-                 if (foodManagementInterval) clearInterval(foodManagementInterval);
-                 await deleteDoc(doc(db, getCollectionPath(currentServerId, 'players'), userId)).catch(()=>{});
+            elements.playButton.disabled = true;
+            elements.playButton.textContent = "サーバー準備中...";
+
+            try {
+                if (currentServerId) {
+                     if(unsubPlayers) unsubPlayers();
+                     if(unsubFood) unsubFood();
+                     if (foodManagementInterval) clearInterval(foodManagementInterval);
+                     await deleteDoc(doc(db, getCollectionPath(currentServerId, 'players'), userId)).catch(()=>{});
+                }
+
+                currentServerId = serverId;
+                elements.serverName.textContent = serverId;
+
+                allPlayers = {};
+
+                listenForGameUpdates();
+                
+                const foodCollection = collection(db, getCollectionPath(currentServerId, 'food'));
+                const foodSnapshot = await getDocs(foodCollection);
+                if(foodSnapshot.empty){
+                    spawnInitialFood();
+                }
+
+                foodManagementInterval = setInterval(manageFood, 5000);
+
+                startGame();
+            } catch (error) {
+                console.error("接続に失敗しました:", error);
+                elements.modal.classList.remove('hidden');
+                elements.modalTitle.textContent = "接続エラー";
+                elements.modalSubtitle.textContent = "サーバーの準備に失敗しました。";
+                elements.finalScoreContainer.classList.add('hidden');
+                elements.playButton.disabled = false;
+                elements.playButton.textContent = "プレイ";
             }
-
-            currentServerId = serverId;
-            elements.serverName.textContent = serverId;
-
-            allPlayers = {}; // プレイヤーリストをリセット
-            bots = [];
-            if(serverId === 'B1') {
-                initializeBots(BOT_COUNT);
-            }
-
-            listenForGameUpdates();
-            
-            const foodCollection = collection(db, getCollectionPath(currentServerId, 'food'));
-            const foodSnapshot = await getDocs(foodCollection);
-            if(foodSnapshot.empty){
-                spawnInitialFood();
-            }
-
-            foodManagementInterval = setInterval(manageFood, 5000);
-
-            startGame();
         }
 
         // === ゲームロジック ===
@@ -340,16 +343,13 @@
                 }
             }
             
-            // --- Bots Update ---
-            if(currentServerId === 'B1') updateBots();
-
             checkFoodCollision();
             checkPlayerCollision();
 
             camera.x += (localPlayer.segments[0].x - camera.x) * 0.1;
             camera.y += (localPlayer.segments[0].y - camera.y) * 0.1;
 
-            if (Date.now() - lastUpdateTime > 250) { // 最適化：通信頻度をさらに落とす
+            if (Date.now() - lastUpdateTime > 250) {
                 updatePlayerInFirestore();
                 lastUpdateTime = Date.now();
             }
@@ -378,7 +378,7 @@
 
         function checkPlayerCollision() {
             const head = localPlayer.segments[0];
-            const opponents = [...Object.values(allPlayers), ...bots];
+            const opponents = Object.values(allPlayers);
 
             for (const otherPlayer of opponents) {
                 if (otherPlayer.id === userId) continue;
@@ -413,6 +413,7 @@
             elements.modalSubtitle.textContent = isOutOfBounds ? "ワールドの外に出てしまいました。" : "";
             elements.finalScoreContainer.classList.remove('hidden');
             elements.finalScore.textContent = scoreBeforeDeath;
+            elements.playButton.disabled = false;
             elements.playButton.textContent = "もう一度プレイ";
         }
 
@@ -450,7 +451,7 @@
                 }
             }
             
-            const playersToDraw = [...Object.values(allPlayers), ...bots];
+            const playersToDraw = Object.values(allPlayers);
             playersToDraw.sort((a,b) => (a.score || 0) - (b.score || 0)).forEach(p => {
                 if (p.segments && p.segments.length > 0) {
                     const head = p.segments[0];
@@ -476,7 +477,7 @@
             minimapCtx.strokeRect(0, 0, 150, 150);
             
             const scale = 150 / WORLD_SIZE;
-            const playersToMap = [...Object.values(allPlayers), ...bots];
+            const playersToMap = Object.values(allPlayers);
             
             playersToMap.forEach(p => {
                  if(p.segments && p.segments.length > 0) {
@@ -528,7 +529,7 @@
         function updateLeaderboard() {
             const playersWithLocal = {...allPlayers};
             if(localPlayer) playersWithLocal[userId] = localPlayer;
-            const allEntities = [...Object.values(playersWithLocal), ...bots];
+            const allEntities = Object.values(playersWithLocal);
 
             const sortedPlayers = allEntities.sort((a, b) => (b.score || 0) - (a.score || 0)).slice(0, 5);
             elements.leaderboard.innerHTML = '';
@@ -540,89 +541,6 @@
             });
         }
         
-        // === BOTロジック ===
-        function initializeBots(count) {
-             for (let i = 0; i < count; i++) {
-                const bot = {
-                    id: `bot_${i}`,
-                    name: `BOT ${i + 1}`,
-                    segments: [{ x: Math.random() * WORLD_SIZE, y: Math.random() * WORLD_SIZE }],
-                    angle: Math.random() * 2 * Math.PI,
-                    targetAngle: Math.random() * 2 * Math.PI,
-                    score: INITIAL_SCORE,
-                    color: `hsl(${Math.random() * 360}, 40%, 30%)`,
-                    isBot: true,
-                    stateTimer: 0,
-                };
-                bots.push(bot);
-            }
-        }
-
-        function updateBots(){
-            bots.forEach(bot => {
-                bot.stateTimer--;
-                if(bot.stateTimer <= 0) {
-                    bot.targetAngle = bot.angle + (Math.random() - 0.5) * Math.PI;
-                    bot.stateTimer = Math.random() * 150 + 50;
-                }
-
-                let angleDiff = bot.targetAngle - bot.angle;
-                while (angleDiff < -Math.PI) angleDiff += 2 * Math.PI;
-                while (angleDiff > Math.PI) angleDiff -= 2 * Math.PI;
-                bot.angle += angleDiff * TURN_SPEED * 0.6;
-
-                const speed = BASE_SPEED * 0.9;
-                const head = bot.segments[0];
-                const newHead = {
-                    x: head.x + Math.cos(bot.angle) * speed,
-                    y: head.y + Math.sin(bot.angle) * speed,
-                };
-                
-                let isDead = false;
-                if (newHead.x < 0 || newHead.x > WORLD_SIZE || newHead.y < 0 || newHead.y > WORLD_SIZE) {
-                    isDead = true;
-                }
-
-                if (!isDead) {
-                    const opponents = [...Object.values(allPlayers), ...bots, localPlayer].filter(p => p);
-                    for (const otherPlayer of opponents) {
-                        if (bot.id === otherPlayer.id) continue;
-                        for (let i = 0; i < otherPlayer.segments.length; i++) {
-                            const segment = otherPlayer.segments[i];
-                            const dist = Math.hypot(newHead.x - segment.x, newHead.y - segment.y);
-                            if (dist < SNAKE_RADIUS * 1.5) {
-                                isDead = true;
-                                break; 
-                            }
-                        }
-                        if (isDead) break;
-                    }
-                }
-
-                if (isDead) {
-                    spawnFood(bot.score, bot.segments[0].x, bot.segments[0].y, true);
-                    bot.segments = [{ x: Math.random() * WORLD_SIZE, y: Math.random() * WORLD_SIZE }];
-                    bot.score = INITIAL_SCORE;
-                    return; 
-                }
-                
-                bot.segments.unshift(newHead);
-                const maxSegments = Math.floor(bot.score);
-                while (bot.segments.length > maxSegments) {
-                    bot.segments.pop();
-                }
-
-                for (const id in food) {
-                    const f = food[id];
-                    const dist = Math.hypot(head.x - f.x, head.y - f.y);
-                    if (dist < SNAKE_RADIUS + f.value) {
-                        bot.score += f.value;
-                    }
-                }
-            });
-        }
-
-
         // === Firebaseとの通信 ===
         function listenForGameUpdates() {
             unsubPlayers = onSnapshot(collection(db, getCollectionPath(currentServerId, 'players')), snapshot => {
@@ -641,9 +559,6 @@
                     if (!currentIds[id]) delete allPlayers[id];
                 });
                 let playerCount = Object.keys(allPlayers).length + (localPlayer ? 1 : 0);
-                if (currentServerId === 'B1') {
-                    playerCount += bots.length;
-                }
                 elements.playerCount.textContent = playerCount;
             });
             unsubFood = onSnapshot(collection(db, getCollectionPath(currentServerId, 'food')), snapshot => {
@@ -659,7 +574,7 @@
             const playerDoc = doc(db, getCollectionPath(currentServerId, 'players'), userId);
             localPlayer.lastSeen = Date.now();
             const data = { ...localPlayer };
-            data.segments = data.segments.filter((_, i) => i % 6 === 0); // 最適化：データ量をさらに削減
+            data.segments = data.segments.filter((_, i) => i % 6 === 0);
             await setDoc(playerDoc, data);
         }
         
@@ -735,7 +650,9 @@
                 }
             }
 
-            await batch.commit().catch(console.error);
+            if(deletedCount > 0 || currentFoodCount < MAX_FOOD_COUNT){
+                 await batch.commit().catch(console.error);
+            }
         }
 
         // === イベントリスナー ===
