@@ -245,7 +245,6 @@
                      if(unsubPlayers) unsubPlayers();
                      if(unsubFood) unsubFood();
                      if (foodManagementInterval) clearInterval(foodManagementInterval);
-                     // The player doc is already deleted in handleDeath. No need to delete again.
                 }
 
                 currentServerId = serverId;
@@ -277,10 +276,6 @@
 
         // === ゲームロジック ===
         function startGame() {
-            // Reset modal UI for next time
-            elements.modalTitle.textContent = "マージスネーク";
-            elements.modalSubtitle.textContent = "コインを集めて一番大きなスネークを目指せ！";
-            elements.finalScoreContainer.classList.add('hidden');
             elements.playButton.disabled = false;
             elements.playButton.textContent = "プレイ";
 
@@ -305,6 +300,7 @@
         }
 
         function gameLoop() {
+            if (!localPlayer) return; // Stop loop if player is dead
             update();
             draw();
             animationFrameId = requestAnimationFrame(gameLoop);
@@ -412,8 +408,17 @@
             
             localPlayer = null;
             cancelAnimationFrame(animationFrameId);
-            if (foodManagementInterval) clearInterval(foodManagementInterval);
 
+            // --- Thorough State Cleanup ---
+            if (foodManagementInterval) clearInterval(foodManagementInterval);
+            foodManagementInterval = null;
+            if (unsubPlayers) unsubPlayers();
+            unsubPlayers = null;
+            if (unsubFood) unsubFood();
+            unsubFood = null;
+            allPlayers = {};
+            food = {};
+            // --- End Cleanup ---
 
             elements.modal.classList.remove('hidden');
             elements.modalTitle.textContent = isOutOfBounds ? "範囲外" : "ゲームオーバー";
