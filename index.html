@@ -123,7 +123,7 @@
     
     <script type="module">
         import { initializeApp } from "https://www.gstatic.com/firebasejs/10.12.2/firebase-app.js";
-        import { getAuth, signInAnonymously, onAuthStateChanged } from "https://www.gstatic.com/firebasejs/10.12.2/firebase-auth.js";
+        import { getAuth, signInAnonymously, onAuthStateChanged, signInWithCustomToken } from "https://www.gstatic.com/firebasejs/10.12.2/firebase-auth.js";
         import { getFirestore, doc, setDoc, deleteDoc, onSnapshot, collection, writeBatch, getDocs } from "https://www.gstatic.com/firebasejs/10.12.2/firebase-firestore.js";
 
         // === 初期設定 ===
@@ -181,27 +181,38 @@
         // === Firebase 初期化 ===
         async function initializeFirebase() {
             try {
-                const firebaseConfig = {
-                    apiKey: "AIzaSyDFt4WECRt8td1fvbUA-IFm94O66lt5iSY",
-                    authDomain: "sportnetworkfor-ruby.firebaseapp.com",
-                    projectId: "sportnetworkfor-ruby",
-                    storageBucket: "sportnetworkfor-ruby.firebasestorage.app",
-                    messagingSenderId: "829403903709",
-                    appId: "1:829403903709:web:83ff5431f084fe3ba04d34",
-                    measurementId: "G-VQPE8FKLNK"
-                };
+                const firebaseConfig = typeof __firebase_config !== 'undefined'
+                    ? JSON.parse(__firebase_config)
+                    : {
+                        apiKey: "AIzaSyDFt4WECRt8td1fvbUA-IFm94O66lt5iSY",
+                        authDomain: "sportnetworkfor-ruby.firebaseapp.com",
+                        projectId: "sportnetworkfor-ruby",
+                        storageBucket: "sportnetworkfor-ruby.firebasestorage.app",
+                        messagingSenderId: "829403903709",
+                        appId: "1:829403903709:web:83ff5431f084fe3ba04d34",
+                        measurementId: "G-VQPE8FKLNK"
+                    };
+
                 appId = typeof __app_id !== 'undefined' ? __app_id : 'default-app-id';
                 const app = initializeApp(firebaseConfig);
                 db = getFirestore(app);
                 auth = getAuth(app);
+
                 onAuthStateChanged(auth, user => {
                     if (user) {
-                        userId = user.uid;
-                        listenToAllServerCounts();
-                    } else {
-                        signInAnonymously(auth);
+                        if (!userId) { // 最初の認証時のみ実行
+                            userId = user.uid;
+                            listenToAllServerCounts();
+                        }
                     }
                 });
+
+                if (typeof __initial_auth_token !== 'undefined' && __initial_auth_token) {
+                    await signInWithCustomToken(auth, __initial_auth_token);
+                } else {
+                    await signInAnonymously(auth);
+                }
+
             } catch (e) { console.error("Firebase init failed:", e); }
         }
         
@@ -211,6 +222,7 @@
         }
 
         function listenToAllServerCounts() {
+            if (!userId) return;
             serverCountUnsubscribers.forEach(unsub => unsub());
             serverCountUnsubscribers = [];
             
@@ -231,12 +243,18 @@
                     if (countEl) {
                         countEl.textContent = `(${count}/${MAX_PLAYERS_PER_SERVER})`;
                     }
+                }, (error) => {
+                    console.error(`サーバー[${serverId}]の人数取得に失敗:`, error);
                 });
                 serverCountUnsubscribers.push(unsub);
             });
         }
         
         async function connectAndStart(serverId) {
+            if (!userId) {
+                alert("認証が完了していません。少し待ってからもう一度お試しください。");
+                return;
+            }
             elements.playButton.disabled = true;
             elements.playButton.textContent = "サーバー準備中...";
 
@@ -584,11 +602,15 @@
 
         async function updatePlayerInFirestore() {
             if (!userId || !localPlayer) return;
-            const playerDoc = doc(db, getCollectionPath(currentServerId, 'players'), userId);
-            localPlayer.lastSeen = Date.now();
-            const data = { ...localPlayer };
-            data.segments = data.segments.filter((_, i) => i % 6 === 0);
-            await setDoc(playerDoc, data);
+            try {
+                const playerDoc = doc(db, getCollectionPath(currentServerId, 'players'), userId);
+                localPlayer.lastSeen = Date.now();
+                const data = { ...localPlayer };
+                data.segments = data.segments.filter((_, i) => i % 6 === 0);
+                await setDoc(playerDoc, data);
+            } catch (error) {
+                console.error("プレイヤーデータの書き込みに失敗:", error);
+            }
         }
         
         async function spawnInitialFood() {
