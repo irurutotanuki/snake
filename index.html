@@ -245,7 +245,7 @@
                      if(unsubPlayers) unsubPlayers();
                      if(unsubFood) unsubFood();
                      if (foodManagementInterval) clearInterval(foodManagementInterval);
-                     await deleteDoc(doc(db, getCollectionPath(currentServerId, 'players'), userId)).catch(()=>{});
+                     // The player doc is already deleted in handleDeath. No need to delete again.
                 }
 
                 currentServerId = serverId;
@@ -277,6 +277,13 @@
 
         // === ゲームロジック ===
         function startGame() {
+            // Reset modal UI for next time
+            elements.modalTitle.textContent = "マージスネーク";
+            elements.modalSubtitle.textContent = "コインを集めて一番大きなスネークを目指せ！";
+            elements.finalScoreContainer.classList.add('hidden');
+            elements.playButton.disabled = false;
+            elements.playButton.textContent = "プレイ";
+
             const playerName = elements.playerNameInput.value || `Player${Math.floor(Math.random() * 1000)}`;
             elements.modal.classList.add('hidden');
             
@@ -381,7 +388,7 @@
             const opponents = Object.values(allPlayers);
 
             for (const otherPlayer of opponents) {
-                if (otherPlayer.id === userId) continue;
+                if (!otherPlayer || !otherPlayer.segments || otherPlayer.id === userId) continue;
                 for (let i = 0; i < otherPlayer.segments.length; i++) {
                     const segment = otherPlayer.segments[i];
                     const dist = Math.hypot(head.x - segment.x, head.y - segment.y);
@@ -399,7 +406,7 @@
             }
             
             const scoreBeforeDeath = localPlayer ? Math.floor(localPlayer.score) : 0;
-            if (currentServerId) {
+            if (currentServerId && userId) {
                  deleteDoc(doc(db, getCollectionPath(currentServerId, 'players'), userId));
             }
             
@@ -453,7 +460,7 @@
             
             const playersToDraw = Object.values(allPlayers);
             playersToDraw.sort((a,b) => (a.score || 0) - (b.score || 0)).forEach(p => {
-                if (p.segments && p.segments.length > 0) {
+                if (p && p.segments && p.segments.length > 0) {
                     const head = p.segments[0];
                     const buffer = SNAKE_RADIUS * Math.sqrt(p.score || INITIAL_SCORE) * 2;
                     if (head.x > viewBounds.left - buffer && head.x < viewBounds.right + buffer &&
@@ -480,7 +487,7 @@
             const playersToMap = Object.values(allPlayers);
             
             playersToMap.forEach(p => {
-                 if(p.segments && p.segments.length > 0) {
+                 if(p && p.segments && p.segments.length > 0) {
                     minimapCtx.fillStyle = p.color;
                     minimapCtx.fillRect(p.segments[0].x * scale, p.segments[0].y * scale, 3, 3);
                 }
@@ -534,6 +541,7 @@
             const sortedPlayers = allEntities.sort((a, b) => (b.score || 0) - (a.score || 0)).slice(0, 5);
             elements.leaderboard.innerHTML = '';
             sortedPlayers.forEach(p => {
+                if (!p) return;
                 const li = document.createElement('li');
                 li.textContent = `${p.name}: ${Math.floor(p.score)}`;
                 if(p.id === userId) li.style.color = '#facc15';
