@@ -108,10 +108,11 @@
             <!-- サーバー選択UI -->
             <div id="server-selection" class="my-4">
                 <h3 class="text-xl mb-2">サーバー選択</h3>
-                <div class="grid grid-cols-3 gap-2">
+                <div class="grid grid-cols-2 gap-2">
                     <button class="server-btn bg-gray-700 hover:bg-gray-600 p-2 rounded-md transition-all active" data-server="1">S1 <span id="server-1-count">(0/30)</span></button>
                     <button class="server-btn bg-gray-700 hover:bg-gray-600 p-2 rounded-md transition-all" data-server="2">S2 <span id="server-2-count">(0/30)</span></button>
                     <button class="server-btn bg-gray-700 hover:bg-gray-600 p-2 rounded-md transition-all" data-server="3">S3 <span id="server-3-count">(0/30)</span></button>
+                    <button class="server-btn bg-green-800 hover:bg-green-700 p-2 rounded-md transition-all" data-server="B1">BOT <span id="server-B1-count">(10/30)</span></button>
                 </div>
             </div>
 
@@ -156,11 +157,16 @@
         const TURN_SPEED = 0.07;
         const SNAKE_RADIUS = 10;
         const MAX_PLAYERS_PER_SERVER = 30;
-        const INITIAL_FOOD_COUNT = 200;
+        const MAX_FOOD_COUNT = 150;
+        const FOOD_LIFETIME = 15000;
+        const PLAYER_TIMEOUT = 6000; // 最適化：タイムアウト時間を少し延長
+        const BOT_COUNT = 10; // 最適化：BOTの数を10に削減
+        const INITIAL_SCORE = 30;
 
         // === ゲーム状態 ===
         let localPlayer = null;
         let allPlayers = {};
+        let bots = [];
         let food = {};
         let camera = { x: WORLD_SIZE / 2, y: WORLD_SIZE / 2, zoom: 1 };
         let joystick = { active: false, angle: 0, dx: 0, dy: 0 };
@@ -173,18 +179,19 @@
         let selectedServerId = '1';
         let unsubPlayers, unsubFood;
         let serverCountUnsubscribers = [];
+        let foodManagementInterval;
 
         // === Firebase 初期化 ===
         async function initializeFirebase() {
             try {
                 const firebaseConfig = {
-                  apiKey: "AIzaSyDFt4WECRt8td1fvbUA-IFm94O66lt5iSY",
-                  authDomain: "sportnetworkfor-ruby.firebaseapp.com",
-                  projectId: "sportnetworkfor-ruby",
-                  storageBucket: "sportnetworkfor-ruby.firebasestorage.app",
-                  messagingSenderId: "829403903709",
-                  appId: "1:829403903709:web:83ff5431f084fe3ba04d34",
-                  measurementId: "G-VQPE8FKLNK"
+                    apiKey: "AIzaSyDFt4WECRt8td1fvbUA-IFm94O66lt5iSY",
+                    authDomain: "sportnetworkfor-ruby.firebaseapp.com",
+                    projectId: "sportnetworkfor-ruby",
+                    storageBucket: "sportnetworkfor-ruby.firebasestorage.app",
+                    messagingSenderId: "829403903709",
+                    appId: "1:829403903709:web:83ff5431f084fe3ba04d34",
+                    measurementId: "G-VQPE8FKLNK"
                 };
                 appId = typeof __app_id !== 'undefined' ? __app_id : 'default-app-id';
                 const app = initializeApp(firebaseConfig);
@@ -202,35 +209,55 @@
         }
         
         function getCollectionPath(serverId, collectionName) {
-            const path = `merge_snake_v3_server_${serverId}_${collectionName}`;
+            const path = `merge_snake_v5_server_${serverId}_${collectionName}`;
             return `/artifacts/${appId}/public/data/${path}`;
         }
 
         function listenToAllServerCounts() {
             serverCountUnsubscribers.forEach(unsub => unsub());
             serverCountUnsubscribers = [];
-            for (let i = 1; i <= 3; i++) {
-                const serverId = i.toString();
+            
+            const serverIds = ['1', '2', '3', 'B1'];
+            serverIds.forEach(serverId => {
                 const playersCollection = collection(db, getCollectionPath(serverId, 'players'));
                 const unsub = onSnapshot(playersCollection, snapshot => {
-                    const count = snapshot.size;
+                    let count = 0;
+                    const now = Date.now();
+                    snapshot.forEach(doc => {
+                        const playerData = doc.data();
+                        if (playerData.lastSeen && (now - playerData.lastSeen < PLAYER_TIMEOUT * 2)) {
+                            count++;
+                        }
+                    });
+
+                    if (serverId === 'B1') {
+                        count += BOT_COUNT;
+                    }
                     const countEl = document.getElementById(`server-${serverId}-count`);
                     if (countEl) {
                         countEl.textContent = `(${count}/${MAX_PLAYERS_PER_SERVER})`;
                     }
                 });
                 serverCountUnsubscribers.push(unsub);
-            }
+            });
         }
         
         async function connectAndStart(serverId) {
-            if (currentServerId && currentServerId !== serverId) {
-                if(unsubPlayers) unsubPlayers();
-                if(unsubFood) unsubFood();
-                await deleteDoc(doc(db, getCollectionPath(currentServerId, 'players'), userId));
+            if (currentServerId) {
+                 if(unsubPlayers) unsubPlayers();
+                 if(unsubFood) unsubFood();
+                 if (foodManagementInterval) clearInterval(foodManagementInterval);
+                 await deleteDoc(doc(db, getCollectionPath(currentServerId, 'players'), userId)).catch(()=>{});
             }
+
             currentServerId = serverId;
             elements.serverName.textContent = serverId;
+
+            allPlayers = {}; // プレイヤーリストをリセット
+            bots = [];
+            if(serverId === 'B1') {
+                initializeBots(BOT_COUNT);
+            }
 
             listenForGameUpdates();
             
@@ -239,6 +266,8 @@
             if(foodSnapshot.empty){
                 spawnInitialFood();
             }
+
+            foodManagementInterval = setInterval(manageFood, 5000);
 
             startGame();
         }
@@ -255,8 +284,9 @@
                 segments: [startPos],
                 angle: Math.random() * 2 * Math.PI,
                 targetAngle: 0,
-                score: 10,
-                color: `hsl(${Math.random() * 360}, 70%, 50%)`
+                score: INITIAL_SCORE,
+                color: `hsl(${Math.random() * 360}, 70%, 50%)`,
+                lastSeen: Date.now()
             };
             
             isBoosting = false;
@@ -274,6 +304,7 @@
         function update() {
             if (!localPlayer) return;
 
+            // --- Player Update ---
             if (joystick.active) {
                 localPlayer.targetAngle = joystick.angle;
             }
@@ -289,9 +320,8 @@
                 y: head.y + Math.sin(localPlayer.angle) * speed,
             };
 
-            // 範囲外判定
             if (newHead.x < 0 || newHead.x > WORLD_SIZE || newHead.y < 0 || newHead.y > WORLD_SIZE) {
-                handleDeath(true); // 範囲外による死亡
+                handleDeath(true);
                 return;
             }
             
@@ -309,6 +339,9 @@
                     spawnFood(1, lastSegment.x, lastSegment.y);
                 }
             }
+            
+            // --- Bots Update ---
+            if(currentServerId === 'B1') updateBots();
 
             checkFoodCollision();
             checkPlayerCollision();
@@ -316,7 +349,7 @@
             camera.x += (localPlayer.segments[0].x - camera.x) * 0.1;
             camera.y += (localPlayer.segments[0].y - camera.y) * 0.1;
 
-            if (Date.now() - lastUpdateTime > 100) {
+            if (Date.now() - lastUpdateTime > 250) { // 最適化：通信頻度をさらに落とす
                 updatePlayerInFirestore();
                 lastUpdateTime = Date.now();
             }
@@ -332,7 +365,7 @@
             for (const id in food) {
                 const f = food[id];
                 const dist = Math.hypot(head.x - f.x, head.y - f.y);
-                if (dist < SNAKE_RADIUS + 5) {
+                if (dist < SNAKE_RADIUS + f.value) { 
                     localPlayer.score += f.value;
                     const foodDocRef = doc(db, getCollectionPath(currentServerId, 'food'), id);
                     batch.delete(foodDocRef);
@@ -345,13 +378,14 @@
 
         function checkPlayerCollision() {
             const head = localPlayer.segments[0];
-            for (const pId in allPlayers) {
-                if (pId === userId) continue;
-                const otherPlayer = allPlayers[pId];
+            const opponents = [...Object.values(allPlayers), ...bots];
+
+            for (const otherPlayer of opponents) {
+                if (otherPlayer.id === userId) continue;
                 for (let i = 0; i < otherPlayer.segments.length; i++) {
                     const segment = otherPlayer.segments[i];
                     const dist = Math.hypot(head.x - segment.x, head.y - segment.y);
-                    if (dist < SNAKE_RADIUS * 1.5) { // 衝突
+                    if (dist < SNAKE_RADIUS * 1.5) {
                         handleDeath(false);
                         return;
                     }
@@ -361,14 +395,18 @@
 
         function handleDeath(isOutOfBounds = false) {
             if (!isOutOfBounds && localPlayer && localPlayer.segments.length > 0) {
-                spawnFood(localPlayer.segments.length, localPlayer.segments[0].x, localPlayer.segments[0].y, true);
+                spawnFood(localPlayer.score, localPlayer.segments[0].x, localPlayer.segments[0].y, true);
             }
             
             const scoreBeforeDeath = localPlayer ? Math.floor(localPlayer.score) : 0;
-            deleteDoc(doc(db, getCollectionPath(currentServerId, 'players'), userId));
+            if (currentServerId) {
+                 deleteDoc(doc(db, getCollectionPath(currentServerId, 'players'), userId));
+            }
             
             localPlayer = null;
             cancelAnimationFrame(animationFrameId);
+            if (foodManagementInterval) clearInterval(foodManagementInterval);
+
 
             elements.modal.classList.remove('hidden');
             elements.modalTitle.textContent = isOutOfBounds ? "範囲外" : "ゲームオーバー";
@@ -387,6 +425,13 @@
             ctx.scale(camera.zoom, camera.zoom);
             ctx.translate(-camera.x, -camera.y);
 
+            const viewBounds = {
+                left: camera.x - (canvas.width / 2 / camera.zoom) - 50,
+                right: camera.x + (canvas.width / 2 / camera.zoom) + 50,
+                top: camera.y - (canvas.height / 2 / camera.zoom) - 50,
+                bottom: camera.y + (canvas.height / 2 / camera.zoom) + 50
+            };
+
             ctx.fillStyle = '#1c1917';
             ctx.fillRect(0, 0, WORLD_SIZE, WORLD_SIZE);
             
@@ -396,13 +441,26 @@
 
             for (const id in food) {
                 const f = food[id];
-                ctx.beginPath();
-                ctx.arc(f.x, f.y, 5, 0, 2 * Math.PI);
-                ctx.fillStyle = f.color;
-                ctx.fill();
+                if (f.x > viewBounds.left && f.x < viewBounds.right && f.y > viewBounds.top && f.y < viewBounds.bottom) {
+                    ctx.beginPath();
+                    const radius = 3 + Math.log(f.value || 1) * 2;
+                    ctx.arc(f.x, f.y, radius, 0, 2 * Math.PI);
+                    ctx.fillStyle = f.color;
+                    ctx.fill();
+                }
             }
             
-            Object.values(allPlayers).sort((a,b) => a.score - b.score).forEach(p => drawSnake(p));
+            const playersToDraw = [...Object.values(allPlayers), ...bots];
+            playersToDraw.sort((a,b) => (a.score || 0) - (b.score || 0)).forEach(p => {
+                if (p.segments && p.segments.length > 0) {
+                    const head = p.segments[0];
+                    const buffer = SNAKE_RADIUS * Math.sqrt(p.score || INITIAL_SCORE) * 2;
+                    if (head.x > viewBounds.left - buffer && head.x < viewBounds.right + buffer &&
+                        head.y > viewBounds.top - buffer && head.y < viewBounds.bottom + buffer) {
+                        drawSnake(p);
+                    }
+                }
+            });
             if(localPlayer) drawSnake(localPlayer);
 
             ctx.restore();
@@ -418,14 +476,14 @@
             minimapCtx.strokeRect(0, 0, 150, 150);
             
             const scale = 150 / WORLD_SIZE;
+            const playersToMap = [...Object.values(allPlayers), ...bots];
             
-            for(const pId in allPlayers){
-                const p = allPlayers[pId];
-                if(p.segments && p.segments.length > 0) {
+            playersToMap.forEach(p => {
+                 if(p.segments && p.segments.length > 0) {
                     minimapCtx.fillStyle = p.color;
                     minimapCtx.fillRect(p.segments[0].x * scale, p.segments[0].y * scale, 3, 3);
                 }
-            }
+            });
             
             if(localPlayer && localPlayer.segments.length > 0) {
                 minimapCtx.fillStyle = 'yellow';
@@ -470,8 +528,9 @@
         function updateLeaderboard() {
             const playersWithLocal = {...allPlayers};
             if(localPlayer) playersWithLocal[userId] = localPlayer;
+            const allEntities = [...Object.values(playersWithLocal), ...bots];
 
-            const sortedPlayers = Object.values(playersWithLocal).sort((a, b) => b.score - a.score).slice(0, 5);
+            const sortedPlayers = allEntities.sort((a, b) => (b.score || 0) - (a.score || 0)).slice(0, 5);
             elements.leaderboard.innerHTML = '';
             sortedPlayers.forEach(p => {
                 const li = document.createElement('li');
@@ -481,18 +540,111 @@
             });
         }
         
+        // === BOTロジック ===
+        function initializeBots(count) {
+             for (let i = 0; i < count; i++) {
+                const bot = {
+                    id: `bot_${i}`,
+                    name: `BOT ${i + 1}`,
+                    segments: [{ x: Math.random() * WORLD_SIZE, y: Math.random() * WORLD_SIZE }],
+                    angle: Math.random() * 2 * Math.PI,
+                    targetAngle: Math.random() * 2 * Math.PI,
+                    score: INITIAL_SCORE,
+                    color: `hsl(${Math.random() * 360}, 40%, 30%)`,
+                    isBot: true,
+                    stateTimer: 0,
+                };
+                bots.push(bot);
+            }
+        }
+
+        function updateBots(){
+            bots.forEach(bot => {
+                bot.stateTimer--;
+                if(bot.stateTimer <= 0) {
+                    bot.targetAngle = bot.angle + (Math.random() - 0.5) * Math.PI;
+                    bot.stateTimer = Math.random() * 150 + 50;
+                }
+
+                let angleDiff = bot.targetAngle - bot.angle;
+                while (angleDiff < -Math.PI) angleDiff += 2 * Math.PI;
+                while (angleDiff > Math.PI) angleDiff -= 2 * Math.PI;
+                bot.angle += angleDiff * TURN_SPEED * 0.6;
+
+                const speed = BASE_SPEED * 0.9;
+                const head = bot.segments[0];
+                const newHead = {
+                    x: head.x + Math.cos(bot.angle) * speed,
+                    y: head.y + Math.sin(bot.angle) * speed,
+                };
+                
+                let isDead = false;
+                if (newHead.x < 0 || newHead.x > WORLD_SIZE || newHead.y < 0 || newHead.y > WORLD_SIZE) {
+                    isDead = true;
+                }
+
+                if (!isDead) {
+                    const opponents = [...Object.values(allPlayers), ...bots, localPlayer].filter(p => p);
+                    for (const otherPlayer of opponents) {
+                        if (bot.id === otherPlayer.id) continue;
+                        for (let i = 0; i < otherPlayer.segments.length; i++) {
+                            const segment = otherPlayer.segments[i];
+                            const dist = Math.hypot(newHead.x - segment.x, newHead.y - segment.y);
+                            if (dist < SNAKE_RADIUS * 1.5) {
+                                isDead = true;
+                                break; 
+                            }
+                        }
+                        if (isDead) break;
+                    }
+                }
+
+                if (isDead) {
+                    spawnFood(bot.score, bot.segments[0].x, bot.segments[0].y, true);
+                    bot.segments = [{ x: Math.random() * WORLD_SIZE, y: Math.random() * WORLD_SIZE }];
+                    bot.score = INITIAL_SCORE;
+                    return; 
+                }
+                
+                bot.segments.unshift(newHead);
+                const maxSegments = Math.floor(bot.score);
+                while (bot.segments.length > maxSegments) {
+                    bot.segments.pop();
+                }
+
+                for (const id in food) {
+                    const f = food[id];
+                    const dist = Math.hypot(head.x - f.x, head.y - f.y);
+                    if (dist < SNAKE_RADIUS + f.value) {
+                        bot.score += f.value;
+                    }
+                }
+            });
+        }
+
+
         // === Firebaseとの通信 ===
         function listenForGameUpdates() {
             unsubPlayers = onSnapshot(collection(db, getCollectionPath(currentServerId, 'players')), snapshot => {
                 const currentIds = {};
+                const now = Date.now();
                 snapshot.forEach(d => {
-                    if (d.id !== userId) allPlayers[d.id] = d.data();
+                    const playerData = d.data();
+                    if (d.id !== userId && now - (playerData.lastSeen || 0) > PLAYER_TIMEOUT) {
+                        deleteDoc(d.ref);
+                        return;
+                    }
+                    if (d.id !== userId) allPlayers[d.id] = playerData;
                     currentIds[d.id] = true;
                 });
                 Object.keys(allPlayers).forEach(id => {
                     if (!currentIds[id]) delete allPlayers[id];
                 });
-                elements.playerCount.textContent = Object.keys(allPlayers).length + (localPlayer ? 1 : 0);
+                let playerCount = Object.keys(allPlayers).length + (localPlayer ? 1 : 0);
+                if (currentServerId === 'B1') {
+                    playerCount += bots.length;
+                }
+                elements.playerCount.textContent = playerCount;
             });
             unsubFood = onSnapshot(collection(db, getCollectionPath(currentServerId, 'food')), snapshot => {
                 snapshot.docChanges().forEach(change => {
@@ -505,40 +657,85 @@
         async function updatePlayerInFirestore() {
             if (!userId || !localPlayer) return;
             const playerDoc = doc(db, getCollectionPath(currentServerId, 'players'), userId);
+            localPlayer.lastSeen = Date.now();
             const data = { ...localPlayer };
-            data.segments = data.segments.filter((_, i) => i % 3 === 0);
+            data.segments = data.segments.filter((_, i) => i % 6 === 0); // 最適化：データ量をさらに削減
             await setDoc(playerDoc, data);
         }
         
         async function spawnInitialFood() {
              const batch = writeBatch(db);
-             for(let i = 0; i < INITIAL_FOOD_COUNT; i++) {
+             for(let i = 0; i < MAX_FOOD_COUNT; i++) {
                 const foodId = doc(collection(db, 'idGenerator')).id;
                 const foodDocRef = doc(db, getCollectionPath(currentServerId, 'food'), foodId);
                 batch.set(foodDocRef, {
                     x: Math.random() * WORLD_SIZE,
                     y: Math.random() * WORLD_SIZE,
                     value: 1,
-                    color: `hsl(${Math.random() * 360}, 100%, 75%)`
+                    color: `hsl(${Math.random() * 360}, 100%, 75%)`,
+                    createdAt: Date.now()
                 });
              }
              await batch.commit().catch(console.error);
         }
 
-        async function spawnFood(count, x, y, isDeath = false) {
-             const batch = writeBatch(db);
-             for(let i = 0; i < count; i++) {
-                const foodId = doc(collection(db, 'idGenerator')).id;
-                const foodDocRef = doc(db, getCollectionPath(currentServerId, 'food'), foodId);
-                const value = isDeath ? Math.ceil(Math.random() * 2) : 1;
-                batch.set(foodDocRef, {
-                    x: x + (Math.random() - 0.5) * (isDeath ? 200 : 20),
-                    y: y + (Math.random() - 0.5) * (isDeath ? 200 : 20),
-                    value,
-                    color: `hsl(${Math.random() * 360}, 100%, 75%)`
-                });
-             }
-             await batch.commit();
+        async function spawnFood(score, x, y, isDeath = false) {
+            const batch = writeBatch(db);
+            const now = Date.now();
+            if (isDeath && score > 0) {
+                let remainingScore = score;
+                const coinValues = { large: 25, medium: 10, small: 1 };
+                
+                const numLarge = Math.floor(remainingScore / coinValues.large);
+                for (let i = 0; i < numLarge; i++) {
+                     batch.set(doc(collection(db, getCollectionPath(currentServerId, 'food'))), {
+                        x: x + (Math.random() - 0.5) * 200, y: y + (Math.random() - 0.5) * 200,
+                        value: coinValues.large, color: '#facc15', createdAt: now });
+                }
+                remainingScore %= coinValues.large;
+
+                const numMedium = Math.floor(remainingScore / coinValues.medium);
+                 for (let i = 0; i < numMedium; i++) {
+                     batch.set(doc(collection(db, getCollectionPath(currentServerId, 'food'))), {
+                        x: x + (Math.random() - 0.5) * 200, y: y + (Math.random() - 0.5) * 200,
+                        value: coinValues.medium, color: '#c0c0c0', createdAt: now });
+                }
+                remainingScore %= coinValues.medium;
+
+                 for (let i = 0; i < remainingScore; i++) {
+                     batch.set(doc(collection(db, getCollectionPath(currentServerId, 'food'))), {
+                        x: x + (Math.random() - 0.5) * 200, y: y + (Math.random() - 0.5) * 200,
+                        value: coinValues.small, color: '#cd7f32', createdAt: now });
+                }
+            } else if (!isDeath && score > 0) {
+                batch.set(doc(collection(db, getCollectionPath(currentServerId, 'food'))), {
+                    x: x, y: y, value: 1, color: `hsl(${Math.random() * 360}, 100%, 75%)`, createdAt: now });
+            }
+             await batch.commit().catch(e => console.error("Failed to spawn food:", e));
+        }
+
+        async function manageFood() {
+            if (!currentServerId) return;
+            const batch = writeBatch(db);
+            const now = Date.now();
+            let deletedCount = 0;
+            for (const id in food) {
+                if (now - food[id].createdAt > FOOD_LIFETIME) {
+                    batch.delete(doc(db, getCollectionPath(currentServerId, 'food'), id));
+                    deletedCount++;
+                }
+            }
+
+            const currentFoodCount = Object.keys(food).length - deletedCount;
+            if (currentFoodCount < MAX_FOOD_COUNT) {
+                 for(let i=0; i < (MAX_FOOD_COUNT - currentFoodCount); i++) {
+                    batch.set(doc(collection(db, getCollectionPath(currentServerId, 'food'))), {
+                         x: Math.random() * WORLD_SIZE, y: Math.random() * WORLD_SIZE,
+                         value: 1, color: `hsl(${Math.random() * 360}, 100%, 75%)`, createdAt: now });
+                }
+            }
+
+            await batch.commit().catch(console.error);
         }
 
         // === イベントリスナー ===
@@ -553,7 +750,7 @@
         });
 
         window.addEventListener('beforeunload', () => {
-            if(userId && localPlayer) deleteDoc(doc(db, getCollectionPath(currentServerId, 'players'), userId));
+            if(userId && currentServerId) deleteDoc(doc(db, getCollectionPath(currentServerId, 'players'), userId));
         });
         
         // Joystick & Boost controls
